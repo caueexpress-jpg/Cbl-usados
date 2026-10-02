@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CBL Usados</title>
+  <style>
+    :root{color-scheme:dark;--bg:#090909;--panel:#151515;--red:#d71920;--muted:#aaa}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:#f5f5f5;font-family:Arial,Helvetica,sans-serif}
+    header{padding:26px 18px;text-align:center;border-bottom:1px solid #292929}
+    header h1{margin:0;font-size:clamp(2rem,8vw,4rem);letter-spacing:5px;font-weight:900}
+    header h1 span{color:var(--red)}header p{color:var(--muted);margin:8px 0 0;letter-spacing:2px}
+    main{max-width:1100px;margin:auto;padding:24px 16px 60px}
+    .hero{padding:36px 22px;background:linear-gradient(135deg,#191919,#080808);border:1px solid #292929;border-left:4px solid var(--red);margin-bottom:28px}
+    .hero h2{font-size:clamp(1.6rem,5vw,2.6rem);margin:0 0 10px}.hero p{color:#bbb;line-height:1.6;margin:0}
+    .bar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin:25px 0 16px}
+    h2.section{font-size:1.4rem;text-transform:uppercase;letter-spacing:2px}
+    button,.button{background:var(--red);color:white;border:0;padding:11px 15px;font-weight:bold;cursor:pointer;text-decoration:none;display:inline-block}
+    button.secondary{background:#333}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px}
+    .product{background:var(--panel);border:1px solid #292929;overflow:hidden}.product img{width:100%;height:250px;object-fit:cover;background:#222;display:block}
+    .product .info{padding:14px}.product h3{margin:0 0 7px}.product p{color:#bbb;line-height:1.4;min-height:38px}
+    .price{font-size:1.2rem;font-weight:bold;color:#fff}.empty{color:#999;padding:25px 0}
+    footer{text-align:center;padding:28px 15px;border-top:1px solid #292929;color:#888}
+    .modal{display:none;position:fixed;inset:0;background:#000d;z-index:5;overflow:auto;padding:18px}.modal.open{display:block}
+    .modalbox{max-width:620px;margin:30px auto;background:#151515;border:1px solid #444;padding:20px}
+    .modalbox h2{margin-top:0}.modalbox input,.modalbox textarea{width:100%;padding:12px;margin:7px 0 13px;background:#090909;color:white;border:1px solid #444}
+    .modalbox textarea{min-height:80px}.actions{display:flex;gap:8px;flex-wrap:wrap}.adminitem{padding:12px 0;border-bottom:1px solid #333}
+    .hint{font-size:.85rem;color:#aaa;line-height:1.5}
+  </style>
+</head>
+<body>
+<header><h1>CBL<span>.</span></h1><p>USADOS · STREETWEAR</p></header>
+<main>
+  <section class="hero"><h2>PEÇAS COM HISTÓRIA.</h2><p>Garimpos, streetwear e roupas usadas escolhidas a dedo. Confira as peças disponíveis.</p></section>
+  <div class="bar"><h2 class="section">Catálogo</h2><button id="adminOpen" class="secondary">Área administrativa</button></div>
+  <section id="catalog" class="grid"></section>
+  <p id="empty" class="empty" hidden>Nenhuma peça cadastrada no momento. Volte em breve!</p>
+</main>
+<footer>CBL USADOS · STREETWEAR<br><br><a id="whatsapp" class="button" target="_blank" rel="noopener">Fale pelo WhatsApp</a></footer>
+
+<div class="modal" id="loginModal"><div class="modalbox">
+  <div class="bar"><h2>Entrar no admin</h2><button class="secondary" data-close="loginModal">Fechar</button></div>
+  <label>Senha</label><input id="password" type="password" autocomplete="current-password">
+  <button id="loginBtn">Entrar</button><p id="loginError" class="hint"></p>
+</div></div>
+
+<div class="modal" id="adminModal"><div class="modalbox">
+  <div class="bar"><h2>Gerenciar catálogo</h2><button class="secondary" data-close="adminModal">Fechar</button></div>
+  <h3 id="formTitle">Adicionar peça</h3>
+  <input id="pName" placeholder="Nome da peça">
+  <textarea id="pDescription" placeholder="Descrição"></textarea>
+  <input id="pPrice" placeholder="Preço (ex.: R$ 49,90)">
+  <label>Foto da peça</label><input id="pImage" type="file" accept="image/*">
+  <p class="hint">Use imagens de até 2 MB. Para atualizar o catálogo, salve as alterações. Elas ficam disponíveis para todos os visitantes.</p>
+  <div class="actions"><button id="saveProduct">Salvar peça</button><button class="secondary" id="cancelEdit">Limpar</button></div>
+  <h3>Peças cadastradas</h3><div id="adminList"></div>
+  <button class="secondary" id="logoutBtn">Sair do administrador</button>
+  <p id="adminStatus" class="hint"></p>
+</div></div>
+
+<script>
+const WHATSAPP = "5511912646444";
+const API = "/.netlify/functions/catalog";
+let products = [];
+let adminPassword = "";
+let editingId = null;
+let localImported = false;
+const $ = id => document.getElementById(id);
+
+$("whatsapp").href = `https://wa.me/${WHATSAPP}?text=${encodeURIComponent("Olá! Tenho interesse em uma peça da CBL.")}`;
+
+async function api(action, extra={}) {
+  const response = await fetch(API, {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({action, password: adminPassword, ...extra})
+  });
+  const data = await response.json().catch(()=>({error:"Resposta inválida do servidor"}));
+  if (!response.ok) throw new Error(data.error || "Erro ao comunicar com o servidor");
+  return data;
+}
+async function loadProducts() {
+  try {
+    const response = await fetch(API);
+    if (!response.ok) throw new Error("Não foi possível carregar o catálogo");
+    const data = await response.json();
+    products = data.products || [];
+    render();
+  } catch(e) {
+    $("catalog").innerHTML = '<p class="empty">Não foi possível carregar o catálogo. Tente novamente mais tarde.</p>';
+  }
+}
+function render() {
+  $("catalog").innerHTML = products.map(p => `
+    <article class="product">
+      ${p.image ? `<img src="${p.image}" alt="${escapeHtml(p.name)}">` : '<div style="height:250px;background:#222;display:grid;place-items:center;color:#777">CBL</div>'}
+      <div class="info"><h3>${escapeHtml(p.name)}</h3><p>${escapeHtml(p.description || "")}</p><div class="price">${escapeHtml(p.price || "")}</div></div>
+    </article>`).join("");
+  $("empty").hidden = products.length > 0;
+}
+function escapeHtml(value="") {
+  return String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function open(id){$(id).classList.add("open")}
+function close(id){$(id).classList.remove("open")}
+document.querySelectorAll("[data-close]").forEach(b=>b.addEventListener("click",()=>close(b.dataset.close)));
+$("adminOpen").onclick=()=>open("loginModal");
+$("loginBtn").onclick=async()=>{
+  adminPassword=$("password").value;
+  try {
+    await api("login");
+    close("loginModal"); open("adminModal"); $("loginError").textContent="";
+    await refreshAdmin();
+    // Importa automaticamente os produtos antigos salvos neste navegador, se o catálogo online estiver vazio.
+    if (!localImported && products.length===0) {
+      const old = JSON.parse(localStorage.getItem("cbl_products") || "[]");
+      if (old.length) {
+        await api("import", {products:old});
+        localImported=true;
+        await refreshAdmin();
+        $("adminStatus").textContent="Produtos antigos deste aparelho foram importados para o catálogo compartilhado.";
+      }
+    }
+  } catch(e) {$("loginError").textContent=e.message;adminPassword="";}
+};
+async function refreshAdmin(){
+  const data=await api("list");
+  products=data.products||[];render();
+  $("adminList").innerHTML=products.map(p=>`<div class="adminitem"><b>${escapeHtml(p.name)}</b> — ${escapeHtml(p.price||"")}<div class="actions"><button class="secondary" onclick="editProduct('${p.id}')">Editar</button><button onclick="deleteProduct('${p.id}')">Excluir</button></div></div>`).join("") || '<p class="hint">Nenhuma peça cadastrada.</p>';
+}
+window.editProduct=id=>{
+  const p=products.find(x=>x.id===id);if(!p)return;
+  editingId=id;$("pName").value=p.name;$("pDescription").value=p.description||"";$("pPrice").value=p.price||"";
+  $("formTitle").textContent="Editar peça";
+};
+window.deleteProduct=async id=>{
+  if(!confirm("Excluir esta peça?"))return;
+  try{await api("delete",{id});await refreshAdmin();$("adminStatus").textContent="Peça excluída."}
+  catch(e){$("adminStatus").textContent=e.message}
+};
+$("saveProduct").onclick=async()=>{
+  const name=$("pName").value.trim(), description=$("pDescription").value.trim(), price=$("pPrice").value.trim(), file=$("pImage").files[0];
+  if(!name){$("adminStatus").textContent="Digite o nome da peça.";return}
+  let image=products.find(p=>p.id===editingId)?.image || "";
+  if(file){
+    if(file.size>2*1024*1024){$("adminStatus").textContent="A imagem precisa ter até 2 MB.";return}
+    image=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(file)});
+  }
+  try{
+    await api("save",{product:{id:editingId||crypto.randomUUID(),name,description,price,image}});
+    clearForm();await refreshAdmin();$("adminStatus").textContent="Peça salva para todos os visitantes.";
+  }catch(e){$("adminStatus").textContent=e.message}
+};
+function clearForm(){editingId=null;$("pName").value="";$("pDescription").value="";$("pPrice").value="";$("pImage").value="";$("formTitle").textContent="Adicionar peça"}
+$("cancelEdit").onclick=clearForm;
+$("logoutBtn").onclick=()=>{adminPassword="";close("adminModal");clearForm()};
+loadProducts();
+</script>
+</body>
+</html>
