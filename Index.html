@@ -1,4 +1,174 @@
-import { getStore } from "@netlify/blobs";<!DOCTYPE html>
+import { getStore } from "@netlify/blobs";
+
+const STORE_NAME = "cbl-catalog";
+const CATALOG_KEY = "_catalog_v1";
+const MAX_IMAGE_DATA_URL_LENGTH = 3 * 1024 * 1024;
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+function validPassword(password) {
+  const expected = process.env.CBL_ADMIN_PASSWORD;
+  return Boolean(expected && typeof password === "string" && password === expected);
+}
+
+function normalizeProduct(p) {
+  return {
+    id: String(p.id),
+    name: String(p.name || "Produto").slice(0, 120),
+    price: String(p.price || "0"),
+    category: String(p.category || "Outros").slice(0, 40),
+    description: String(p.description || "").slice(0, 500),
+    image: p.image,
+  };
+}
+
+async function readProducts(store) {
+  const saved = await store.get(CATALOG_KEY, { type: "json" });
+  if (Array.isArray(saved)) return saved;
+
+  const { blobs = [] } = await store.list();
+  const products = [];
+
+  for (const blob of blobs) {
+    if (blob.key === CATALOG_KEY) continue;
+
+    try {
+      const product = await store.get(blob.key, { type: "json" });
+
+      if (
+        product &&
+        typeof product.id === "string" &&
+        typeof product.image === "string"
+      ) {
+        products.push(normalizeProduct(product));
+      }
+    } catch (error) {
+      console.error("Não foi possível ler o produto legado:", blob.key, error);
+    }
+  }
+
+  products.sort((a, b) => Number(b.id) - Number(a.id));
+  return products;
+}
+
+export default async (req) => {
+  try {
+    const store = getStore({
+      name: STORE_NAME,
+      consistency: "strong",
+    });
+
+    if (req.method === "GET") {
+      return json({ products: await readProducts(store) });
+    }
+
+    if (req.method !== "POST") {
+      return json({ error: "Método não permitido." }, 405);
+    }
+
+    const body = await req.json();
+    const { action, password } = body || {};
+
+    if (action === "login") {
+      return validPassword(password)
+        ? json({ ok: true })
+        : json({ error: "Senha incorreta." }, 401);
+    }
+
+    if (!validPassword(password)) {
+      return json({ error: "Senha incorreta." }, 401);
+    }
+
+    if (action === "save") {
+      const p = body.product;
+
+      if (
+        !p ||
+        typeof p.id !== "string" ||
+        !p.id ||
+        typeof p.name !== "string" ||
+        !p.name.trim() ||
+        !p.price ||
+        typeof p.image !== "string"
+      ) {
+        return json({ error: "Dados do produto incompletos." }, 400);
+      }
+
+      if (
+        p.image.length > MAX_IMAGE_DATA_URL_LENGTH ||
+        !/^data:image\/(jpeg|jpg|png|webp|gif);base64,/i.test(p.image)
+      ) {
+        return json({
+          error: "Imagem inválida ou muito grande. Use uma imagem de até 2 MB.",
+        }, 400);
+      }
+
+      const products = await readProducts(store);
+      const product = normalizeProduct(p);
+      const index = products.findIndex((item) => item.id === product.id);
+
+      if (index >= 0) {
+        products[index] = product;
+      } else {
+        products.unshift(product);
+      }
+
+      await store.setJSON(CATALOG_KEY, products);
+
+      return json({ ok: true, count: products.length });
+    }
+
+    if (action === "delete") {
+      if (typeof body.id !== "string" || !body.id) {
+        return json({ error: "Produto inválido." }, 400);
+      }
+
+      const products = await readProducts(store);
+      const updated = products.filter((item) => item.id !== body.id);
+
+      await store.setJSON(CATALOG_KEY, updated);
+
+      return json({ ok: true, count: updated.length });
+    }
+
+    if (action === "import") {
+      const current = await readProducts(store);
+
+      if (current.length === 0 && Array.isArray(body.products)) {
+        const imported = body.products
+          .filter(
+            (p) =>
+              p &&
+              typeof p.id === "string" &&
+              typeof p.image === "string" &&
+              p.image.length <= MAX_IMAGE_DATA_URL_LENGTH
+          )
+          .slice(0, 100)
+          .map(normalizeProduct);
+
+        await store.setJSON(CATALOG_KEY, imported);
+      }
+
+      return json({ ok: true });
+    }
+
+    return json({ error: "Ação inválida." }, 400);
+  } catch (error) {
+    console.error("Erro no catálogo CBL:", error);
+
+    return json({
+      error: "Erro interno ao acessar o catálogo. Consulte os logs da função catalog.",
+    }, 500);
+  }
+};<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -26,9 +196,9 @@ function openLogin(){document.getElementById("login").style.display="block";docu
 async function login(){const password=document.getElementById("password").value;const err=document.getElementById("login-error");const btn=document.querySelector("#login .save");if(!password){err.textContent="Digite a senha.";return}btn.disabled=true;btn.textContent="ENTRANDO...";try{await postData({action:"login",password});adminPassword=password;closeModal("login");document.getElementById("manager").style.display="block";renderAdmin()}catch(e){err.textContent=e.message||"Senha incorreta ou erro ao conectar."}finally{btn.disabled=false;btn.textContent="ENTRAR"}}
 function closeModal(id){document.getElementById(id).style.display="none"}
 async function saveProduct(){const name=document.getElementById("name").value.trim(),price=document.getElementById("price").value,category=document.getElementById("category").value,description=document.getElementById("description").value.trim(),file=document.getElementById("image").files[0],editId=document.getElementById("edit-id").value,btn=document.getElementById("save-button");if(!name||!price||Number(price)<=0){alert("Preencha o nome e um preço válido.");return}const old=products.find(p=>p.id===editId);async function finish(image){if(!old&&!image){alert("Escolha uma foto para o produto.");return}const product={id:old?old.id:String(Date.now()),name,price,category,description,image:image||(old?old.image:"")};btn.disabled=true;btn.textContent="SALVANDO...";try{await postData({action:"save",password:adminPassword,product});clearForm();await loadProducts();alert("Produto salvo com sucesso!")}catch(e){alert(e.message||"Não foi possível salvar o produto. Tente uma foto menor.")}finally{btn.disabled=false;btn.textContent="SALVAR PRODUTO"}}if(file){if(file.size>2*1024*1024){alert("A imagem deve ter no máximo 2 MB.");return}const reader=new FileReader();reader.onload=()=>finish(reader.result);reader.onerror=()=>alert("Não foi possível ler a imagem.");reader.readAsDataURL(file)}else{finish(null)}}
-function editProduct(id){const p=products.find(x=>x.id===id);if(!p)return;document.getElementById("edit-id").value=p.id;document.getElementById("name").value=p.name;document.getElementById("price").value=p.price;document.getElementById("category").value=p.category;document.getElementById("description").value=p.description;document.getElementById("form-title").textContent="Editar produto";document.getElementById("image").value="";window.scrollTo(0,0)}
-async function deleteProduct(id){if(!confirm("Tem certeza que deseja excluir esta peça?"))return;try{await postData({action:"delete",password:adminPassword,id});await loadProducts()}catch(e){alert(e.message||"Não foi possível excluir a peça.")}}
+function editProduct(id){const p=products.find(x=>String(x.id)===String(id));if(!p)return;document.getElementById("edit-id").value=p.id;document.getElementById("name").value=p.name;document.getElementById("price").value=p.price;document.getElementById("category").value=p.category;document.getElementById("description").value=p.description;document.getElementById("form-title").textContent="Editar produto";document.getElementById("image").value="";const manager=document.getElementById("manager");manager.scrollTo({top:0,behavior:"smooth"})}
+async function deleteProduct(id){if(!confirm("Tem certeza que deseja excluir esta peça?"))return;try{await postData({action:"delete",password:adminPassword,id});await loadProducts();alert("Peça excluída com sucesso!")}catch(e){alert(e.message||"Não foi possível excluir a peça.")}}
 function clearForm(){["edit-id","name","price","description","image"].forEach(id=>document.getElementById(id).value="");document.getElementById("category").selectedIndex=0;document.getElementById("form-title").textContent="Adicionar produto"}
-function renderAdmin(){const c=document.getElementById("admin-products");if(!c)return;if(!products.length){c.innerHTML='<p style="color:#888;margin-top:15px">Nenhum produto cadastrado.</p>';return}c.innerHTML=products.map(p=>`<div class="product-admin"><img src="${p.image}" alt=""><div><strong>${escapeHTML(p.name)}</strong><br><small>${money(p.price)}</small></div><button onclick="editProduct(${JSON.stringify(String(p.id))})">EDITAR</button><button class="delete" onclick="deleteProduct(${JSON.stringify(String(p.id))})">X</button></div>`).join("")}
+function renderAdmin(){const c=document.getElementById("admin-products");if(!c)return;if(!products.length){c.innerHTML='<p style="color:#888;margin-top:15px">Nenhum produto cadastrado.</p>';return}c.innerHTML=products.map(p=>`<div class="product-admin"><img src="${p.image}" alt=""><div><strong>${escapeHTML(p.name)}</strong><br><small>${money(p.price)}</small></div><button type="button" data-edit-id="${escapeHTML(p.id)}">EDITAR</button><button type="button" class="delete" data-delete-id="${escapeHTML(p.id)}">X</button></div>`).join("");c.querySelectorAll("[data-edit-id]").forEach(btn=>btn.addEventListener("click",()=>editProduct(btn.dataset.editId)));c.querySelectorAll("[data-delete-id]").forEach(btn=>btn.addEventListener("click",()=>deleteProduct(btn.dataset.deleteId)))}
 document.getElementById("password").addEventListener("keydown",e=>{if(e.key==="Enter")login()});loadProducts();
 </script></body></html>
